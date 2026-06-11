@@ -1,0 +1,161 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ====== PIN DEFINITIONS ======
+#define TRIG_PIN       2
+#define ECHO_PIN       3
+#define SERVO_PIN      5
+#define SOIL_SENSOR    A0
+#define BUZZER_PIN     4
+#define FENCE_LED      8
+#define FARMER_SIGNAL  7      // To ESP32 GPIO14
+#define FENCE_OUT_PIN  6      // 5V boundary output
+#define SS_PIN         10
+#define RST_PIN        9
+
+// ====== OBJECTS ======
+MFRC522 rfid(SS_PIN, RST_PIN);
+Servo gateServo;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ====== VARIABLES ======
+const int closedAngle = 0;
+const int openAngle   = 90;
+const int distanceThreshold = 25;   // cm
+const unsigned long autoCloseTime = 8000;
+unsigned long lastOpenTime = 0;
+bool farmerInside = false;
+
+// ====== AUTHORIZED RFID ======
+byte authorizedUID[][4] = {
+  {0xA5, 0x8D, 0x8E, 0xAB}  // Replace with your UID
+};
+const int authorizedCount = 1;
+
+// ====== FUNCTIONS ======
+long readDistanceCM() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return 999;
+  return duration * 0.034 / 2;
+}
+
+bool isAuthorized(MFRC522::Uid uid) {
+  for (int i = 0; i < authorizedCount; i++) {
+    bool match = true;
+    for (byte j = 0; j < uid.size; j++) {
+      if (uid.uidByte[j] != authorizedUID[i][j]) { match = false; break; }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+void openGate() {
+  gateServo.write(openAngle);
+  lastOpenTime = millis();
+  farmerInside = true;
+  digitalWrite(FARMER_SIGNAL, LOW);   // farmer inside
+  digitalWrite(FENCE_LED, LOW);
+  digitalWrite(FENCE_OUT_PIN, LOW);   // fence off
+  lcd.clear(); lcd.print("Access Granted");
+  Serial.println("FARMER_ENTER");
+}
+
+void closeGate() {
+  gateServo.write(closedAngle);
+  farmerInside = false;
+  digitalWrite(FARMER_SIGNAL, HIGH);  // farmer outside
+  digitalWrite(FENCE_LED, HIGH);
+  digitalWrite(FENCE_OUT_PIN, HIGH);  // fence on
+  lcd.clear(); lcd.print("Gate Closed");
+  Serial.println("FARMER_EXIT");
+}
+
+// ====== SETUP ======
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+  rfid.PCD_Init();
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(SOIL_SENSOR, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(FENCE_LED, OUTPUT);
+  pinMode(FARMER_SIGNAL, OUTPUT);
+  pinMode(FENCE_OUT_PIN, OUTPUT);
+
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(FENCE_LED, HIGH);
+  digitalWrite(FENCE_OUT_PIN, HIGH);
+  digitalWrite(FARMER_SIGNAL, HIGH);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.print("AgriSafeX Ready");
+  delay(1500);
+  lcd.clear();
+
+  gateServo.attach(SERVO_PIN);
+  gateServo.write(closedAngle);
+}
+
+// ====== LOOP ======
+void loop() {
+  long dist = readDistanceCM();
+
+  // LCD update
+  static unsigned long lastLCD = 0;
+  if (millis() - lastLCD > 800) {
+    lastLCD = millis();
+    lcd.setCursor(0, 0);
+    lcd.print("Dist:");
+    lcd.print(dist < 999 ? String(dist) + "cm " : "---cm ");
+    lcd.setCursor(0, 1);
+    lcd.print(farmerInside ? "Mode:Inside " : "Mode:Outside");
+  }
+
+  // RFID & Ultrasonic
+  if (dist <= distanceThreshold) {
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      if (isAuthorized(rfid.uid)) {
+        if (!farmerInside) openGate();
+        else closeGate();
+      } else {
+        lcd.clear(); lcd.print("Access Denied");
+        digitalWrite(BUZZER_PIN, HIGH); delay(800); digitalWrite(BUZZER_PIN, LOW);
+      }
+      rfid.PICC_HaltA();
+      delay(1000);
+    }
+  }
+
+  // Auto-close after timeout
+  if (farmerInside && (millis() - lastOpenTime > autoCloseTime)) {
+    if (dist > distanceThreshold) closeGate();
+    else lastOpenTime = millis();
+  }
+
+  // Soil moisture request from ESP32
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd == "GET_SOIL") {
+      int soilValue = analogRead(SOIL_SENSOR);
+      int moisture = map(soilValue, 1023, 0, 0, 100);
+      Serial.print("SOIL=");
+      Serial.println(moisture);
+    }
+  }
+
+  delay(100);
+}
