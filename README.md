@@ -62,9 +62,7 @@ Sound Alarm
 
 ![Prototype](Prototype/Prototype_Front.jpg)
 
-### Working Setup
 
-![Working Setup](Prototype/Working_Setup.jpg)
 
 ---
 
@@ -74,13 +72,6 @@ Sound Alarm
 
 ![Telegram Alert](Screenshots/Telegram_Alert.jpg)
 
-### RFID Authentication
-
-![RFID](Screenshots/RFID_Access.jpg)
-
-### Intrusion Detection
-
-![Detection](Screenshots/Intrusion_Detection.jpg)
 
 ---
 
